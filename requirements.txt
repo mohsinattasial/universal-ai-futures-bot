@@ -1,8 +1,6 @@
 streamlit
-ccxt
 pandas
 numpy
-scikit-learn
-xgboost
-joblib
 plotly
+requests
+psycopg2-binary
