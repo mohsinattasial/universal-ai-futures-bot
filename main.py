@@ -7,7 +7,7 @@ import subprocess
 
 warnings.filterwarnings("ignore")
 
-# 1. Auto-Install Missing Packages (xgboost & plotly for interactive candlestick charts)
+# 1. Auto-Install Missing Packages
 for pkg in ["xgboost", "plotly"]:
     try:
         __import__(pkg)
@@ -18,7 +18,6 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 # 2. VS Code Play Button (▷) Auto-Bootstrapper
-# Agar user seedha 'python main.py' chalaye toh yeh khud 'streamlit run main.py' chala dega
 if get_script_run_ctx() is None:
     print("🚀 Launching Universal AI Futures Dashboard in your browser...")
     subprocess.run([sys.executable, "-m", "streamlit", "run", os.path.abspath(__file__)])
@@ -49,10 +48,6 @@ st.markdown("""
     .signal-box-short {
         background: linear-gradient(135deg, rgba(239, 68, 68, 0.18), rgba(127, 29, 29, 0.35));
         border: 1px solid #ef4444; border-radius: 14px; padding: 20px; text-align: center;
-    }
-    .metric-card {
-        background: rgba(30, 41, 59, 0.65); border: 1px solid rgba(148, 163, 184, 0.15);
-        border-radius: 12px; padding: 15px; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -131,18 +126,35 @@ def extract_universal_candle_features(df):
     df['vol_ratio'] = df['volume'] / (vol_ma + eps)
     return df
 
-@st.cache_resource
-def get_exchange():
-    return ccxt.binance({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
-    })
+# --- CRASH-PROOF MULTI-EXCHANGE ENGINE ---
+def fetch_ohlcv_safe(symbol, timeframe='1h', limit=250):
+    clean_symbol = symbol.split(':')[0].strip().upper()
+    exchange_ids = [
+        ('binance', 'Binance'),
+        ('kucoin', 'KuCoin'),
+        ('okx', 'OKX'),
+        ('gate', 'Gate.io'),
+        ('bybit', 'Bybit'),
+        ('kraken', 'Kraken')
+    ]
+    last_err = None
+    for ex_id, ex_label in exchange_ids:
+        try:
+            if not hasattr(ccxt, ex_id):
+                continue
+            ex_class = getattr(ccxt, ex_id)
+            ex = ex_class({'enableRateLimit': True, 'timeout': 10000})
+            ohlcv = ex.fetch_ohlcv(clean_symbol, timeframe=timeframe, limit=limit)
+            if ohlcv and len(ohlcv) > 50:
+                return ohlcv, ex_label
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Could not fetch {clean_symbol} from any exchange. Last error: {last_err}")
 
 @st.cache_resource
 def load_or_train_model():
-    exchange = get_exchange()
-    # Check Downloads folder for Kaggle trained model
-    if not os.path.exists(MODEL_PATH):
+    if not os.path.exists(MODEL_PATH) and os.path.exists(DOWNLOADS_DIR):
         downloaded = glob.glob(os.path.join(DOWNLOADS_DIR, 'ai_trading_model*.pkl'))
         if downloaded:
             latest_dl = max(downloaded, key=os.path.getctime)
@@ -152,16 +164,15 @@ def load_or_train_model():
         try:
             loaded_model = joblib.load(MODEL_PATH)
             if getattr(loaded_model, "n_features_in_", len(FEATURES)) == len(FEATURES):
-                return loaded_model, "Kaggle / Saved Universal Model"
+                return loaded_model, "Universal 25-Feature Candlestick AI"
         except Exception:
             pass
 
-    # Auto-train fallback if file is missing or outdated
     train_coins = ['ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'BTC/USDT']
     dfs = []
     for sym in train_coins:
         try:
-            ohlcv = exchange.fetch_ohlcv(sym, timeframe='1d', limit=1000)
+            ohlcv, _ = fetch_ohlcv_safe(sym, timeframe='1d', limit=500)
             tdf = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             tdf = extract_universal_candle_features(tdf)
             tdf['target'] = np.where(tdf['close'].shift(-1) > tdf['close'], 1, 0)
@@ -170,23 +181,29 @@ def load_or_train_model():
             dfs.append(tdf.iloc[:-1])
         except Exception:
             continue
+            
+    if not dfs:
+        raise RuntimeError("Could not fetch training data from any exchange.")
+        
     master = pd.concat(dfs, ignore_index=True)
     new_model = XGBClassifier(
         n_estimators=300, learning_rate=0.03, max_depth=6,
         subsample=0.8, colsample_bytree=0.8, tree_method='hist', random_state=42
     )
     new_model.fit(master[FEATURES].astype(np.float32), master['target'].astype(np.int8))
-    joblib.dump(new_model, MODEL_PATH)
-    return new_model, f"Auto-Trained Multi-Coin Model ({len(master):,} candles)"
+    try:
+        joblib.dump(new_model, MODEL_PATH)
+    except Exception:
+        pass
+    return new_model, f"Cloud Auto-Trained AI ({len(master):,} candles)"
 
 def fetch_coin_analysis(symbol, timeframe):
-    exchange = get_exchange()
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=250)
+    ohlcv, ex_name = fetch_ohlcv_safe(symbol, timeframe=timeframe, limit=250)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     df = extract_universal_candle_features(df)
     df.dropna(subset=FEATURES, inplace=True)
-    return df
+    return df, ex_name
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚡ AI Futures Terminal")
@@ -215,14 +232,14 @@ if st.sidebar.button("🔄 Refresh Live Market Data", use_container_width=True):
 
 # --- MAIN DASHBOARD HEADER ---
 st.title("📈 Universal AI Crypto Futures Terminal")
-st.caption("Live Binance Futures Data • 25-Feature Candlestick Anatomy Engine • Automated ATR Stop-Loss & Take-Profit")
+st.caption("Live Multi-Exchange Data Feed • 25-Feature Candlestick Anatomy Engine • Automated ATR Stop-Loss & Take-Profit")
 
 tab1, tab2 = st.tabs(["🎯 Live Coin Deep-Dive & Chart", "🌐 Multi-Coin Market Radar (All Coins)"])
 
 # ================= TAB 1: SINGLE COIN DEEP-DIVE =================
 with tab1:
     try:
-        df = fetch_coin_analysis(active_coin, timeframe)
+        df, active_exchange = fetch_coin_analysis(active_coin, timeframe)
         latest = df.iloc[-1]
         X_live = df.iloc[[-1]][FEATURES].astype(np.float32)
         
@@ -234,7 +251,6 @@ with tab1:
         atr = float(latest['atr'])
         rsi = float(latest['rsi'])
         
-        # Calculate ATR-based Dynamic Stop Loss & Take Profit
         if pred == 1:
             direction = "BUY / LONG 🚀"
             box_class = "signal-box-long"
@@ -251,16 +267,14 @@ with tab1:
         sl_dist_pct = abs(price - sl_price) / price
         risk_amount = capital * (risk_pct / 100.0)
         position_size_usd = (risk_amount / sl_dist_pct) if sl_dist_pct > 0 else capital * leverage
-        max_allowed_pos = capital * leverage
-        recommended_pos = min(position_size_usd, max_allowed_pos)
+        recommended_pos = min(position_size_usd, capital * leverage)
 
-        # Top Signal Banner & Key Metrics
         col_sig, col_m1, col_m2, col_m3 = st.columns([1.4, 1, 1, 1])
         
         with col_sig:
             st.markdown(f"""
             <div class="{box_class}">
-                <h4 style="margin:0; letter-spacing:1px;">{active_coin} ({timeframe}) AI SIGNAL</h4>
+                <h4 style="margin:0; letter-spacing:1px;">{active_coin} ({timeframe}) • {active_exchange}</h4>
                 <h2 style="margin:6px 0; font-size:28px;">{direction}</h2>
                 <p style="margin:0; font-size:16px;">Confidence: <b>{confidence:.2f}%</b></p>
             </div>
@@ -280,7 +294,6 @@ with tab1:
 
         st.markdown("---")
         
-        # Interactive Plotly Candlestick Chart
         plot_df = df.tail(100)
         fig = go.Figure()
         
@@ -294,13 +307,12 @@ with tab1:
         fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['ema21'], name="EMA 21", line=dict(color="#f59e0b", width=1.2)))
         fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['ema200'], name="EMA 200", line=dict(color="#a855f7", width=1.8)))
         
-        # Add Entry, SL, TP horizontal lines
         fig.add_hline(y=price, line_dash="dot", line_color="#e2e8f0", annotation_text="Entry")
         fig.add_hline(y=sl_price, line_dash="dash", line_color="#ef4444", annotation_text="Stop-Loss")
         fig.add_hline(y=tp1_price, line_dash="dash", line_color="#10b981", annotation_text="TP 1")
         
         fig.update_layout(
-            title=f"{active_coin} Live Candlestick Anatomy & AI Levels ({timeframe})",
+            title=f"{active_coin} Live Candlestick Anatomy & AI Levels ({timeframe} • Source: {active_exchange})",
             template="plotly_dark",
             height=520,
             xaxis_rangeslider_visible=False,
@@ -308,7 +320,6 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Candle Anatomy Breakdown
         st.subheader("🕯️ Latest Candle Anatomy (What the AI Sees)")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Body Size %", f"{latest['body_pct']*100:.2f}%")
@@ -328,7 +339,7 @@ with tab2:
         progress = st.progress(0)
         for idx, sym in enumerate(COINS_LIST):
             try:
-                cdf = fetch_coin_analysis(sym, timeframe)
+                cdf, ex_src = fetch_coin_analysis(sym, timeframe)
                 last = cdf.iloc[-1]
                 X_c = cdf.iloc[[-1]][FEATURES].astype(np.float32)
                 p = int(model.predict(X_c)[0])
@@ -342,6 +353,7 @@ with tab2:
                 
                 rows.append({
                     "Coin": sym,
+                    "Exchange": ex_src,
                     "Live Price ($)": round(c_price, 4),
                     "AI Signal": "🟢 LONG / BUY" if p == 1 else "🔴 SHORT / SELL",
                     "Confidence (%)": round(conf_c, 2),
@@ -354,5 +366,8 @@ with tab2:
                 pass
             progress.progress((idx + 1) / len(COINS_LIST))
             
-        scan_df = pd.DataFrame(rows).sort_values(by="Confidence (%)", ascending=False)
-        st.dataframe(scan_df, use_container_width=True, hide_index=True)
+        if rows:
+            scan_df = pd.DataFrame(rows).sort_values(by="Confidence (%)", ascending=False)
+            st.dataframe(scan_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("⚠️ Kisi bhi exchange se data fetch nahi ho saka. Dubara try karein.")
