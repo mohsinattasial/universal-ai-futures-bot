@@ -5,9 +5,7 @@ Connected directly to ai_trading_model.pkl and the ApexQuant Terminal UI.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import glob
 import os
-import shutil
 
 import joblib
 import numpy as np
@@ -20,7 +18,6 @@ from exchange import get_klines
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(PROJECT_DIR, "ai_trading_model.pkl")
-DOWNLOADS_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
 
 FEATURES = [
     "body_pct", "body_to_range", "upper_wick_ratio", "lower_wick_ratio", "range_pct",
@@ -135,15 +132,8 @@ def extract_universal_candle_features(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_resource(show_spinner=False)
 def load_or_train_model() -> tuple[XGBClassifier, str]:
     """Loads pre-trained ai_trading_model.pkl or trains a fresh 25-feature XGBoost model."""
-    if not os.path.exists(MODEL_PATH) and os.path.exists(DOWNLOADS_DIR):
-        downloaded = glob.glob(os.path.join(DOWNLOADS_DIR, "ai_trading_model*.pkl"))
-        if downloaded:
-            latest_dl = max(downloaded, key=os.path.getctime)
-            try:
-                shutil.copy(latest_dl, MODEL_PATH)
-            except Exception:
-                pass
-
+    # Never auto-discover pickle files from the user's Downloads directory.
+    # Deserializing untrusted joblib/pickle files can execute arbitrary code.
     if os.path.exists(MODEL_PATH):
         try:
             loaded_model = joblib.load(MODEL_PATH)
@@ -155,7 +145,9 @@ def load_or_train_model() -> tuple[XGBClassifier, str]:
     dfs = []
     for sym in COINS:
         try:
-            raw_df, _, _ = get_klines(sym, "1h")
+            raw_df, is_live, _source = get_klines(sym, "1h")
+            if not is_live:
+                continue  # Never train on generated fallback market prices.
             tdf = extract_universal_candle_features(raw_df)
             tdf["target"] = np.where(tdf["c"].shift(-1) > tdf["c"], 1, 0)
             tdf.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -166,7 +158,7 @@ def load_or_train_model() -> tuple[XGBClassifier, str]:
             continue
 
     if not dfs:
-        raise RuntimeError("No valid training data available. Check exchange connectivity and candle history.")
+        raise RuntimeError("No real exchange training data available; synthetic fallback data is not used for model training.")
     master = pd.concat(dfs, ignore_index=True)
     new_model = XGBClassifier(
         n_estimators=300,
