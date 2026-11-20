@@ -165,6 +165,8 @@ def load_or_train_model() -> tuple[XGBClassifier, str]:
         except Exception:
             continue
 
+    if not dfs:
+        raise RuntimeError("No valid training data available. Check exchange connectivity and candle history.")
     master = pd.concat(dfs, ignore_index=True)
     new_model = XGBClassifier(
         n_estimators=300,
@@ -196,7 +198,7 @@ def analyze(df: pd.DataFrame) -> Signal:
         pred = int(model.predict(X_live)[0])
         prob = model.predict_proba(X_live)[0]
         raw_conf = float(prob[pred] * 100.0)
-        conf = int(np.clip(round(raw_conf), 51, 99))
+        conf = int(round(raw_conf))  # Raw model score; not a calibrated accuracy estimate.
         direction = "LONG" if pred == 1 else "SHORT"
         rsi = float(latest["rsi"])
         macd_hist = float(latest["macd_hist_raw"])
