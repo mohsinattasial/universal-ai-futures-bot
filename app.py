@@ -95,7 +95,7 @@ def signal_html(sym: str, s: Signal, p: Plan, lev: int, live: bool, src_name: st
         <span class="b {'g' if live else 'a'}">● {src_name}</span>
       </div>
       <div class="lv-grid num">
-        <div><span>Live Entry Price</span><b>${fp(p.entry)}</b></div>
+        <div><span>{"Live Quote" if live else "Simulated Quote"}</span><b>${fp(p.entry)}</b></div>
         <div><span>Stop-Loss (1.5× ATR)</span><b class="neg">${fp(p.sl)}</b></div>
         <div><span>Take-Profit 1 (2.0× ATR)</span><b class="pos">${fp(p.tp1)}</b></div>
         <div><span>Take-Profit 2 (3.5× ATR)</span><b class="pos">${fp(p.tp2)}</b></div>
@@ -128,7 +128,7 @@ def chart(df: pd.DataFrame, s: Signal, p: Plan, sym: str, tf: str) -> go.Figure:
     for ser, name, col, w in ((s.e9, "EMA 9", CYAN, 1.3), (s.e21, "EMA 21", AMBER, 1.3), (s.e200, "EMA 200", VIOLET, 1.9)):
         fig.add_trace(go.Scatter(x=d.t, y=ser.tail(n), name=name, mode="lines", line=dict(color=col, width=w), hoverinfo="skip"), row=1, col=1)
 
-    for y, col, txt in ((p.sl, RED, f"SL  ${fp(p.sl)}"), (p.tp1, GREEN, f"TP1 ${fp(p.tp1)}"), (p.tp2, GREEN, f"TP2 ${fp(p.tp2)}"), (p.entry, CYAN, f"LIVE ${fp(p.entry)}")):
+    for y, col, txt in ((p.sl, RED, f"SL  ${fp(p.sl)}"), (p.tp1, GREEN, f"TP1 ${fp(p.tp1)}"), (p.tp2, GREEN, f"TP2 ${fp(p.tp2)}"), (p.entry, CYAN, f"ENTRY ${fp(p.entry)}")):
         fig.add_hline(y=y, line=dict(color=col, width=1.1, dash="dash"), annotation_text=txt, annotation_position="top right", annotation_font=dict(color=col, size=10, family="JetBrains Mono"), row=1, col=1)
 
     vol_colors = ["rgba(16, 185, 129, 0.55)" if c >= o else "rgba(244, 63, 94, 0.55)" for c, o in zip(d.c, d.o)]
@@ -184,7 +184,7 @@ def anatomy_html(df: pd.DataFrame, s: Signal, sym: str) -> str:
     )
     cells = "".join([
         cell("Open Price", f"${fp(x.o)}"), cell("Candle High", f"${fp(x.h)}", "pos"),
-        cell("Candle Low", f"${fp(x.l)}", "neg"), cell("Live Close", f"${fp(x.c)}", "pos" if bull else "neg"),
+        cell("Candle Low", f"${fp(x.l)}", "neg"), cell("Latest Close", f"${fp(x.c)}", "pos" if bull else "neg"),
         cell("Body / Range", f"{br * 100:.1f}%"), cell("Upper Wick", f"{up / rg * 100:.1f}%"),
         cell("Lower Wick", f"{lo / rg * 100:.1f}%"), cell("True Range", f"${fp(rg)}", "cy"),
         cell("ATR (14) Vol", f"${fp(s.atr)}", "amb"), cell("Volume Surge", f"{s.vol_surge:.2f}× MA", "pos" if s.vol_surge > 1.2 else ""),
@@ -199,6 +199,12 @@ def anatomy_html(df: pd.DataFrame, s: Signal, sym: str) -> str:
 
 def render_terminal(sym: str, tf: str, capital: float, lev: int) -> None:
     df, live, src_name = get_klines(sym, tf)
+    if not live:
+        st.error(
+            "SIMULATION MODE — live exchanges are unavailable. Prices, "
+            "signals and projected trading levels below are generated from "
+            "synthetic data, not live markets. Do not trade from these outputs."
+        )
     s = analyze(df)
     p = make_plan(s, capital, lev)
 
@@ -238,6 +244,8 @@ def radar_rows() -> list[dict]:
     tickers = fetch_tickers()
     with ThreadPoolExecutor(max_workers=9) as ex:
         data = list(ex.map(lambda k: get_klines(k, "15m"), COINS))
+    if any(not is_live for _, is_live, _ in data):
+        st.warning("Some radar entries use synthetic fallback data, not live exchange prices.")
     rows = []
     for sym, (df, _, _) in zip(COINS, data):
         s = analyze(df)
