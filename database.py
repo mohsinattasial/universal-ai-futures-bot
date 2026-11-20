@@ -4,6 +4,8 @@ database.py — Hybrid PostgreSQL (Local + Cloud URI) & Cloud-Safe Fallback Auth
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 import os
 import sqlite3
 import streamlit as st
@@ -32,7 +34,7 @@ def get_pg_connection():
         return psycopg2.connect(
             dbname=os.getenv("DB_NAME", "universal_ai_futures_bot"),
             user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASSWORD", "123"),  # Apna local PostgreSQL password yahan likhein
+            password=os.getenv("DB_PASSWORD", ""),  # Configure via environment
             host=os.getenv("DB_HOST", "localhost"),
             port=os.getenv("DB_PORT", "5432"),
             connect_timeout=2,
@@ -42,7 +44,25 @@ def get_pg_connection():
 
 
 def hash_pwd(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Create a salted password hash for new users."""
+    iterations = 310000
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def verify_pwd(password: str, stored: str) -> bool:
+    """Verify PBKDF2 hashes and preserve compatibility with legacy SHA256 logins."""
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, iters, salt, expected = stored.split("$", 3)
+            actual = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"), bytes.fromhex(salt), int(iters)
+            )
+            return hmac.compare_digest(actual, bytes.fromhex(expected))
+        except (ValueError, TypeError):
+            return False
+    return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored)
 
 
 def register_user(username: str, password: str) -> tuple[bool, str]:
@@ -106,7 +126,7 @@ def verify_user(username: str, password: str) -> tuple[bool, str]:
             res = cur.fetchone()
             cur.close()
             conn.close()
-            if res and res[0] == hash_pwd(password):
+            if res and verify_pwd(password, res[0]):
                 return True, "Login successful!"
             return False, "Ghalat username ya password!"
         except Exception as e:
@@ -126,7 +146,7 @@ def verify_user(username: str, password: str) -> tuple[bool, str]:
         cur.execute("SELECT password_hash FROM users WHERE username = ?;", (username,))
         res = cur.fetchone()
         sconn.close()
-        if res and res[0] == hash_pwd(password):
+        if res and verify_pwd(password, res[0]):
             return True, "Login successful!"
         return False, "Ghalat username ya password! Pehle Create Account tab se account banayein."
     except Exception as e:
